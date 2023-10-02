@@ -1,0 +1,111 @@
+MATCH (n) DETACH DELETE n;
+
+CREATE CONSTRAINT ingredient_name IF NOT EXISTS FOR (i:Ingredient) REQUIRE i.ingredientName IS UNIQUE;
+CREATE CONSTRAINT user_name IF NOT EXISTS FOR (u:User) REQUIRE u.userName IS UNIQUE;
+CREATE CONSTRAINT recipe_name IF NOT EXISTS FOR (r:Recipe) REQUIRE r.recipeName IS UNIQUE;
+CREATE CONSTRAINT difficulty_name IF NOT EXISTS FOR (d:Difficulty) REQUIRE d.difficultyName IS UNIQUE;
+CREATE CONSTRAINT meal_type_name IF NOT EXISTS FOR (m:Mealtype) REQUIRE m.mealTypeName IS UNIQUE;
+
+LOAD CSV WITH HEADERS FROM "file:///ingredients.csv" AS r FIELDTERMINATOR ";"
+    CREATE(i:Ingredient {ingredientName:r.ingredientName});
+
+LOAD CSV WITH HEADERS FROM "file:///users.csv" AS row FIELDTERMINATOR';'
+    CREATE(u:User {userName:row.userName, userEmail:row.userEmail, userPassword:row.userPassword, enabled:toBoolean(row.enabled)});
+
+LOAD CSV WITH HEADERS FROM "file:///recipes.csv" AS row FIELDTERMINATOR ";"
+    CREATE (r:Recipe {recipeName:row.recipeName, prepTimeInMinutes:toInteger(row.prepTimeInMinutes), restTimeInMinutes:toInteger(row.restTimeInMinutes), prepText:row.prepText, people:row.people, viewCount:toInteger(row.viewCount), lastModified:datetime()})
+    MERGE (d:Difficulty {difficultyName:row.difficultyName})
+    MERGE (m:Mealtype{mealTypeName:row.mealTypeName})
+    CREATE (r)-[:IS_OF_TYPE]->(m)
+    CREATE (r)-[:IS]->(d);
+
+LOAD CSV WITH HEADERS FROM "file:///recipes.csv" AS row FIELDTERMINATOR ";"
+    MATCH (u:User {userName:row.createdByUser}), (r:Recipe {recipeName:row.recipeName})
+    CREATE (r)-[:CREATED_BY]->(u);
+
+LOAD CSV WITH HEADERS FROM "file:///user_rated_recipe.csv" AS row FIELDTERMINATOR ";"
+    MATCH (u:User{userName:row.userName}),(r:Recipe{recipeName:row.recipeName})
+    CREATE (u)-[:RATED {rating:toInteger(row.rating)}] -> (r);
+
+LOAD CSV WITH HEADERS FROM "file:///user_has_favourite.csv" AS row FIELDTERMINATOR ";"
+    MATCH (u:User{userName:row.userName}), (r:Recipe{recipeName:row.favouriteRecipe})
+    CREATE (u)-[:HAS_AS_FAVOURITE]->(r);
+
+LOAD CSV WITH HEADERS FROM "file:///ingredient_to_recipe.csv" AS row FIELDTERMINATOR ";"
+    MATCH (r:Recipe {recipeName:row.recipeName}), (i:Ingredient {ingredientName:row.ingredientName})
+    CREATE (r)-[:NEEDS{amount:row.amount, unitName:row.unitName, unitAbbreviation:row.unitAbbreviation}]->(i);
+
+LOAD CSV WITH HEADERS FROM "file:///user_has_mealplan.csv" AS row FIELDTERMINATOR ";"
+    MERGE (u:User {userName:row.userName})
+    CREATE (m:Mealplan {mealPlanId:toInteger(row.mealPlanId)})
+    CREATE (u)-[:HAS]->(m);
+
+LOAD CSV WITH HEADERS FROM "file:///user_has_mealplan_includes_recipe.csv" AS row FIELDTERMINATOR ";"
+    MERGE (m:Mealplan {mealPlanId:row.mealPlanId}) 
+    MERGE(r:Recipe{recipeName:row.recipeName})
+    CREATE (m)-[:INCLUDES {userName:row.userName, date:row.date}]->(r);
+
+//1
+MATCH(r:Recipe) RETURN r;
+
+//2
+MATCH(r:Recipe) RETURN r.recipeName, r.prepTimeInMinutes, r.restTimeInMinutes ORDER BY r.prepTimeInMinutes ASC;
+
+//3
+MATCH(r:Recipe) RETURN r.recipeName, (r.prepTimeInMinutes + r.restTimeInMinutes) AS actualTimeInMinutes ORDER BY actualTimeInMinutes DESC;
+
+//4
+MATCH(m:Mealtype{mealTypeName: "Hauptspeise"})-[:IS_OF_TYPE]-(r:Recipe)-[:IS]-(d:Difficulty{difficultyName: "normal"})
+MATCH(r)-[:CREATED_BY]->(u:User) RETURN u.userName, r.recipeName;
+
+//5
+MATCH(u:User)<-[:CREATED_BY]-(Recipe) RETURN DISTINCT u;
+
+//6
+MATCH(:Recipe)-[rel:NEEDS{unitName:"nach Bedarf"}]-(:Ingredient)
+    SET rel.amount="etwas";
+
+//7
+MATCH(:Recipe)-[rel:NEEDS]-(:Ingredient)
+    WHERE rel.unitName=rel.unitAbbreviation
+    SET rel.unitAbbreviation=null;
+	
+//8
+MATCH(r:Recipe)<-[rel:RATED]-(u:User)
+	WITH r, toInteger(AVG(rel.rating)) AS avgRating
+	SET r.rating_average = avgRating;
+
+//9
+MATCH(r:Recipe)
+	RETURN r.recipeName, r.rating_average ORDER BY r.rating_average DESC LIMIT 1;
+
+//10
+MATCH(m:Mealplan)-[rel1:INCLUDES]-(r:Recipe)-[:NEEDS]-(i:Ingredient)
+	WHERE rel1.userName = "CooperKilvington"
+	RETURN DISTINCT i;
+
+//11	
+MATCH(u:User)-[rel:HAS_AS_FAVOURITE]->(r:Recipe)
+	RETURN r.recipeName, count(rel) AS favouriteCount ORDER BY favouriteCount DESC;
+
+//12
+LOAD CSV WITH HEADERS FROM "file:///users_are_friends.csv" AS src FIELDTERMINATOR ";" 
+    MATCH(u1:User{userName:src.userNameOne}), (u2:User{userName:src.userNameTwo})
+    CREATE(u1)-[:IS_FRIENDS]->(u2);
+
+//13	
+MATCH(u:User{userName:"KaliSavile"})-[:IS_FRIENDS]-(friends:User)
+	RETURN friends;
+
+//14
+MATCH(u:User{userName:"KaliSavile"})-[:IS_FRIENDS*3]->(friends:User)
+MATCH(m:Mealplan)-[:INCLUDES{userName:friends.userName}]-(r:Recipe)
+MATCH(r)-[:RATED{rating:5}]-(friends)
+RETURN DISTINCT r.recipeName;
+
+//15
+MATCH(u:User{userName:"KaliSavile"})-[:IS_FRIENDS*3]->(friends:User)
+MATCH(m:Mealplan)-[:INCLUDES{userName:friends.userName}]-(r:Recipe)
+MATCH(r)-[:RATED{rating:5}]-(friends)
+WHERE NOT(m)-[:INCLUDES{userName:"KaliSavile"}]-(r)
+RETURN collect(DISTINCT r.recipeName);
